@@ -526,52 +526,53 @@ class GitHubStorage {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
-      try {
-          const response = await fetch(url, {
-              ...options,
-              signal: controller.signal,
-              headers: this.headers
-          });
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+        headers: {
+          ...this.headers,
+          'If-None-Match': '', // Bypass GitHub's caching
+        }
+      });
 
-          // First get the response text
-          const text = await response.text();
-          
-          if (!response.ok) {
-              // Try to parse error as JSON if possible
-              try {
-                  const errorJson = JSON.parse(text);
-                  throw new Error(
-                      `GitHub API error (${response.status}): ${errorJson.message || errorJson.error || response.statusText}`
-                  );
-              } catch (e) {
-                  // If can't parse JSON, use text response
-                  throw new Error(
-                      `GitHub API error (${response.status}): ${text || response.statusText}`
-                  );
-              }
-          }
+      const text = await response.text();
+      
+      if (!response.ok) {
+        let errorMessage;
+        try {
+          const errorJson = JSON.parse(text);
+          errorMessage = errorJson.message || errorJson.error || response.statusText;
+        } catch (e) {
+          errorMessage = text || response.statusText;
+        }
 
-          // Try to parse as JSON if it's not empty
-          if (text) {
-              try {
-                  return JSON.parse(text);
-              } catch (e) {
-                  return text;
-              }
+        // Handle specific error cases
+        if (response.status === 403) {
+          if (errorMessage.includes('API rate limit exceeded')) {
+            throw new Error('Rate limit exceeded. Please try again later.');
           }
-          
-          return null;
+          throw new Error('Permission denied. Please check your GitHub token permissions.');
+        }
 
-      } catch (error) {
-          // Handle timeout errors specifically
-          if (error.name === 'AbortError') {
-              throw new Error(`Request timeout after ${this.timeout}ms`);
-          }
-          // Re-throw other errors
-          throw error;
-      } finally {
-          clearTimeout(timeoutId);
+        throw new Error(`GitHub API error (${response.status}): ${errorMessage}`);
       }
+
+      // Parse JSON response if possible
+      try {
+        return text ? JSON.parse(text) : null;
+      } catch (e) {
+        return text;
+      }
+
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        throw new Error(`Request timeout after ${this.timeout}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   async initializeRepository() {
@@ -607,44 +608,38 @@ class GitHubStorage {
  
   async ensureDirectoryExists(path) {
     try {
-      // Only check if the base directory exists
       const response = await this.makeRequest(`${this.baseUrl}/contents/${path}`);
       
-      // If it exists and is a directory, we're good
       if (response && Array.isArray(response)) {
         return true;
       }
 
-      // If it exists but is not a directory, delete it
-      if (response && !Array.isArray(response)) {
-        await this.deleteFile(path);
-      }
-
-    } catch (error) {
-      // 404 means directory doesn't exist - expected
-      if (!error.message.includes('404')) {
-        throw error;
-      }
-    }
-
-    // Create directory with .gitkeep
-    try {
+      // Create directory with .gitkeep
       await this.makeRequest(`${this.baseUrl}/contents/${path}/.gitkeep`, {
         method: 'PUT',
         body: JSON.stringify({
           message: `Initialize ${path} directory`,
-          content: btoa('') // Empty file content
+          content: btoa(''),
+          branch: 'main' // Explicitly specify branch
         })
       });
+
       return true;
     } catch (error) {
-      // 409 means directory already exists
-      if (error.message.includes('409')) {
-        return true;
+      if (error.message.includes('404')) {
+        // Create parent directory first if needed
+        const parent = path.split('/').slice(0, -1).join('/');
+        if (parent && parent !== 'data') {
+          await this.ensureDirectoryExists(parent);
+        }
+        
+        // Retry creating this directory
+        return this.ensureDirectoryExists(path);
       }
       throw error;
     }
   }
+
 
   async loadCountryEmails(countryCode) {
     try {
@@ -1374,6 +1369,221 @@ class GitHubStorage {
       if (error.message.includes('404')) {
         return [];
       }
+      throw error;
+    }
+  }
+
+  async searchCountries(query) {
+    try {
+      // Load all countries first
+      const countriesResponse = await this.loadData('data/countries/inchi.json');
+      
+      if (!query.trim()) {
+        return [];
+      }
+
+      // Filter countries based on query
+      return countriesResponse.filter(country => 
+        country.name.toLowerCase().includes(query.toLowerCase()) ||
+        country.code.toLowerCase().includes(query.toLowerCase())
+      );
+    } catch (error) {
+      console.error('Error searching countries:', error);
+      return [];
+    }
+  }
+
+  async loadCountryFolderVersions(countryCode, folderId) {
+    try {
+      const path = `data/countries/${countryCode.toLowerCase()}/${folderId}/versions`;
+      const files = await this.makeRequest(`${this.baseUrl}/contents/${path}`);
+      
+      if (!Array.isArray(files)) {
+        return [];
+      }
+
+      const versions = await Promise.all(
+        files
+          .filter(file => file.name.endsWith('.json'))
+          .map(async file => {
+            try {
+              return await this.loadData(`${path}/${file.name}`);
+            } catch (error) {
+              console.warn(`Failed to load version ${file.name}:`, error);
+              return null;
+            }
+          })
+      );
+
+      // Sort versions by usage count and likes
+      return versions
+        .filter(v => v !== null)
+        .sort((a, b) => {
+          if (a.usageCount !== b.usageCount) {
+            return b.usageCount - a.usageCount;
+          }
+          return b.likes - a.likes;
+        });
+    } catch (error) {
+      console.error('Error loading country folder versions:', error);
+      return [];
+    }
+  }
+
+  async createCountryFolderVersion(countryCode, folderId, emails) {
+    try {
+      const folderPath = `data/countries/${countryCode.toLowerCase()}/${folderId}`;
+      await this.ensureDirectoryExists(`${folderPath}/versions`);
+
+      // Load existing versions to determine next version number
+      const existingVersions = await this.loadCountryFolderVersions(countryCode, folderId);
+      const versionNumber = existingVersions.length + 1;
+
+      const versionData = {
+        id: uuidv4(),
+        version: versionNumber,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        emails,
+        likes: 0,
+        dislikes: 0,
+        usageCount: 0,
+        checksum: ''
+      };
+
+      // Add checksum
+      versionData.checksum = this.security.generateChecksum(versionData);
+
+      // Save version
+      await this.saveData(
+        `${folderPath}/versions/${versionData.id}.json`,
+        versionData
+      );
+
+      return versionData;
+    } catch (error) {
+      console.error('Error creating country folder version:', error);
+      throw error;
+    }
+  }
+  async updateVersionStats(countryCode, folderId, versionId, action) {
+    try {
+      const path = `data/countries/${countryCode.toLowerCase()}/${folderId}/versions/${versionId}.json`;
+      const version = await this.loadData(path);
+
+      if (!version) {
+        throw new Error('Version not found');
+      }
+
+      // Update stats based on action
+      switch (action) {
+        case 'like':
+          version.likes += 1;
+          break;
+        case 'dislike':
+          version.dislikes += 1;
+          break;
+        case 'use':
+          version.usageCount += 1;
+          break;
+        default:
+          throw new Error('Invalid action');
+      }
+
+      version.updatedAt = new Date().toISOString();
+      version.checksum = this.security.generateChecksum(version);
+
+      await this.saveData(path, version);
+      return version;
+    } catch (error) {
+      console.error('Error updating version stats:', error);
+      throw error;
+    }
+  }
+
+  async createCountryFolder(countryCode, folderName) {
+    try {
+      const folderId = uuidv4();
+      const folderPath = `data/countries/${countryCode.toLowerCase()}/${folderId}`;
+      
+      await this.ensureDirectoryExists(folderPath);
+      await this.ensureDirectoryExists(`${folderPath}/versions`);
+
+      const folderData = {
+        id: folderId,
+        name: folderName,
+        countryCode,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        checksum: ''
+      };
+
+      folderData.checksum = this.security.generateChecksum(folderData);
+
+      await this.saveData(
+        `${folderPath}/folder.json`,
+        folderData
+      );
+
+      return folderData;
+    } catch (error) {
+      console.error('Error creating country folder:', error);
+      throw error;
+    }
+  }
+
+  async loadCountryFolders(countryCode) {
+    try {
+      const path = `data/countries/${countryCode.toLowerCase()}`;
+      const files = await this.makeRequest(`${this.baseUrl}/contents/${path}`);
+      
+      if (!Array.isArray(files)) {
+        return [];
+      }
+
+      const folders = await Promise.all(
+        files
+          .filter(file => file.type === 'dir')
+          .map(async folder => {
+            try {
+              return await this.loadData(`${path}/${folder.name}/folder.json`);
+            } catch (error) {
+              console.warn(`Failed to load folder ${folder.name}:`, error);
+              return null;
+            }
+          })
+      );
+
+      return folders
+        .filter(f => f !== null)
+        .sort((a, b) => 
+          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+        );
+    } catch (error) {
+      console.error('Error loading country folders:', error);
+      return [];
+    }
+  }
+
+  // Helper method to get total stats for a version
+  async getVersionStats(countryCode, folderId, versionId) {
+    try {
+      const version = await this.loadData(
+        `data/countries/${countryCode.toLowerCase()}/${folderId}/versions/${versionId}.json`
+      );
+
+      if (!version) {
+        throw new Error('Version not found');
+      }
+
+      return {
+        likes: version.likes,
+        dislikes: version.dislikes,
+        usageCount: version.usageCount,
+        ratio: version.likes / (version.likes + version.dislikes) || 0
+      };
+    } catch (error) {
+      console.error('Error getting version stats:', error);
       throw error;
     }
   }

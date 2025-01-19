@@ -11,7 +11,6 @@ const useDebounce = (callback, delay) => {
   const [timeoutId, setTimeoutId] = useState(null);
 
   useEffect(() => {
-    // Cleanup on unmount
     return () => {
       if (timeoutId) clearTimeout(timeoutId);
     };
@@ -19,17 +18,12 @@ const useDebounce = (callback, delay) => {
 
   return useCallback((...args) => {
     if (timeoutId) clearTimeout(timeoutId);
-    
-    setTimeoutId(
-      setTimeout(() => {
-        callback(...args);
-      }, delay)
-    );
+    setTimeoutId(setTimeout(() => callback(...args), delay));
   }, [callback, delay, timeoutId]);
 };
 
-// UI Components
-const Input = ({ className, ...props }) => (
+// Reusable UI Components
+const Input = ({ className = '', ...props }) => (
   <input
     className={`flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm
                 ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium 
@@ -58,61 +52,7 @@ const Button = ({ children, variant = 'default', className = '', ...props }) => 
   );
 };
 
-const VersionList = ({ versions, onUseVersion, onLikeVersion }) => {
-  const sortedVersions = [...versions].sort((a, b) => {
-    if (a.usageCount !== b.usageCount) {
-      return b.usageCount - a.usageCount;
-    }
-    return b.likes - a.likes;
-  });
-
-  return (
-    <div className="space-y-4">
-      {sortedVersions.map((version) => (
-        <div key={version.id} className="border rounded-lg p-4 bg-white dark:bg-gray-800">
-          <div className="flex justify-between items-center mb-2">
-            <h4 className="font-medium">Version {version.version}</h4>
-            <div className="flex items-center gap-2">
-              <Button 
-                variant="ghost"
-                onClick={() => onLikeVersion(version.id, 'like')}
-                className="p-1"
-              >
-                <ThumbsUp className="h-4 w-4" />
-                <span className="ml-1">{version.likes}</span>
-              </Button>
-              <Button
-                variant="ghost"
-                onClick={() => onLikeVersion(version.id, 'dislike')}
-                className="p-1"
-              >
-                <ThumbsDown className="h-4 w-4" />
-                <span className="ml-1">{version.dislikes}</span>
-              </Button>
-            </div>
-          </div>
-          <div className="space-y-1">
-            {version.emails.map((email, idx) => (
-              <div key={idx} className="text-sm text-gray-600 dark:text-gray-300 flex items-center gap-2">
-                <Mail className="h-4 w-4" />
-                {email}
-              </div>
-            ))}
-          </div>
-          <div className="mt-4 flex justify-between items-center">
-            <span className="text-sm text-gray-500">
-              Used {version.usageCount} times
-            </span>
-            <Button onClick={() => onUseVersion(version)}>
-              Use List
-            </Button>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-};
-
+// Country Search Component
 const CountrySearch = ({ onSelectCountry }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
@@ -179,31 +119,140 @@ const CountrySearch = ({ onSelectCountry }) => {
   );
 };
 
-const CountryFolder = ({ country, folder }) => {
+// Version List Component
+const VersionList = ({ versions = [], onUseVersion, onLikeVersion }) => {
+  const sortedVersions = [...versions].sort((a, b) => {
+    if (a.usageCount !== b.usageCount) return b.usageCount - a.usageCount;
+    return b.likes - a.likes;
+  });
+
+  return (
+    <div className="space-y-4">
+      {sortedVersions.map((version) => (
+        <div key={version.id} className="border rounded-lg p-4 bg-white dark:bg-gray-800">
+          <div className="flex justify-between items-center mb-2">
+            <h4 className="font-medium">Version {version.version}</h4>
+            <div className="flex items-center gap-2">
+              <Button 
+                variant="ghost"
+                onClick={() => onLikeVersion(version.id, 'like')}
+                className="p-1"
+              >
+                <ThumbsUp className="h-4 w-4" />
+                <span className="ml-1">{version.likes}</span>
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => onLikeVersion(version.id, 'dislike')}
+                className="p-1"
+              >
+                <ThumbsDown className="h-4 w-4" />
+                <span className="ml-1">{version.dislikes}</span>
+              </Button>
+            </div>
+          </div>
+          <div className="space-y-1">
+            {version.emails.map((email, idx) => (
+              <div key={idx} className="text-sm text-gray-600 dark:text-gray-300 flex items-center gap-2">
+                <Mail className="h-4 w-4" />
+                {email}
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 flex justify-between items-center">
+            <span className="text-sm text-gray-500">
+              Used {version.usageCount} times
+            </span>
+            <Button onClick={() => onUseVersion(version)}>
+              Use List
+            </Button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// Country Folder Component
+const CountryFolder = ({ country }) => {
+  const [folders, setFolders] = useState([]);
+  const [selectedFolderId, setSelectedFolderId] = useState(null);
   const [versions, setVersions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [isCreating, setIsCreating] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    const loadVersions = async () => {
+    const loadFolders = async () => {
+      if (!country?.code) return;
+      
       try {
-        const data = await githubStorage.loadCountryFolderVersions(
-          country.code,
-          folder.id
-        );
-        setVersions(data);
+        setLoading(true);
+        const data = await githubStorage.loadCountryFolders(country.code);
+        setFolders(data || []);
       } catch (error) {
-        console.error('Error loading versions:', error);
+        console.error('Error loading folders:', error);
+        setError('Failed to load folders');
       } finally {
         setLoading(false);
       }
     };
 
+    loadFolders();
+  }, [country?.code]);
+
+  useEffect(() => {
+    const loadVersions = async () => {
+      if (!selectedFolderId || !country?.code) return;
+      
+      try {
+        const data = await githubStorage.loadCountryFolderVersions(
+          country.code,
+          selectedFolderId
+        );
+        setVersions(data);
+      } catch (error) {
+        console.error('Error loading versions:', error);
+      }
+    };
+
     loadVersions();
-  }, [country.code, folder.id]);
+  }, [selectedFolderId, country?.code]);
+
+  const handleCreateFolder = async (e) => {
+    e.preventDefault();
+    try {
+      setError(null);
+      if (!newFolderName.trim()) {
+        setError('Folder name is required');
+        return;
+      }
+
+      const newFolder = await githubStorage.createCountryFolder(
+        country.code,
+        newFolderName.trim()
+      );
+
+      setFolders(prev => [...prev, newFolder]);
+      setNewFolderName('');
+      setIsCreating(false);
+      setSelectedFolderId(newFolder.id);
+    } catch (error) {
+      console.error('Error creating folder:', error);
+      setError('Failed to create folder');
+    }
+  };
 
   const handleUseVersion = async (version) => {
     try {
-      // Implementation for using a version
+      await githubStorage.updateVersionStats(
+        country.code,
+        selectedFolderId,
+        version.id,
+        'use'
+      );
+      // Handle version usage (e.g., copy emails to clipboard or selected folder)
       console.log('Using version:', version);
     } catch (error) {
       console.error('Error using version:', error);
@@ -212,12 +261,27 @@ const CountryFolder = ({ country, folder }) => {
 
   const handleLikeVersion = async (versionId, action) => {
     try {
-      // Implementation for liking/disliking a version
-      console.log('Version action:', { versionId, action });
+      const updatedVersion = await githubStorage.updateVersionStats(
+        country.code,
+        selectedFolderId,
+        versionId,
+        action
+      );
+      setVersions(prev =>
+        prev.map(v => v.id === versionId ? updatedVersion : v)
+      );
     } catch (error) {
       console.error('Error updating version:', error);
     }
   };
+
+  if (!country) {
+    return (
+      <div className="flex items-center justify-center h-full text-gray-500">
+        Select a country to view folders
+      </div>
+    );
+  }
 
   if (loading) {
     return (
@@ -228,24 +292,88 @@ const CountryFolder = ({ country, folder }) => {
   }
 
   return (
-    <div className="p-4">
-      <div className="flex items-center justify-between mb-6">
-        <h3 className="text-lg font-semibold">
-          {folder.name} - {country.name}
-        </h3>
-        <Button variant="outline" onClick={() => {}}>
-          Add New Version
+    <div className="p-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-semibold">{country.name} Email Lists</h2>
+        <Button onClick={() => setIsCreating(true)}>
+          Create New List
         </Button>
       </div>
-      <VersionList
-        versions={versions}
-        onUseVersion={handleUseVersion}
-        onLikeVersion={handleLikeVersion}
-      />
+
+      {error && (
+        <Alert variant="destructive" className="my-2">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {isCreating && (
+        <form onSubmit={handleCreateFolder} className="space-y-4 p-4 border rounded-lg">
+          <div>
+            <label className="block text-sm font-medium mb-1">List Name</label>
+            <Input
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              placeholder="Enter list name (e.g., Parliament Members)"
+            />
+          </div>
+          <div className="flex gap-2">
+            <Button type="submit">Create</Button>
+            <Button 
+              type="button" 
+              variant="outline"
+              onClick={() => {
+                setIsCreating(false);
+                setNewFolderName('');
+                setError(null);
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </form>
+      )}
+
+      <div className="grid gap-4">
+        {folders.length === 0 ? (
+          <div className="text-center py-8 text-gray-500">
+            No email lists found. Create one to get started.
+          </div>
+        ) : (
+          folders.map(folder => (
+            <div 
+              key={folder.id}
+              className={`p-4 border rounded-lg cursor-pointer transition-colors
+                ${selectedFolderId === folder.id 
+                  ? 'bg-blue-50 border-blue-200 dark:bg-blue-900/20 dark:border-blue-800'
+                  : 'hover:bg-gray-50 dark:hover:bg-gray-800'
+                }`}
+              onClick={() => setSelectedFolderId(folder.id)}
+            >
+              <div className="flex justify-between items-center">
+                <h3 className="font-medium">{folder.name}</h3>
+                <span className="text-sm text-gray-500">
+                  Created {new Date(folder.createdAt).toLocaleDateString()}
+                </span>
+              </div>
+              
+              {selectedFolderId === folder.id && (
+                <div className="mt-4">
+                  <VersionList
+                    versions={versions}
+                    onUseVersion={handleUseVersion}
+                    onLikeVersion={handleLikeVersion}
+                  />
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 };
 
+// Main App Component
 const AppContent = () => {
   const { loading, error } = useFolders();
   const [selectedFolder, setSelectedFolder] = useState(null);
@@ -291,7 +419,7 @@ const AppContent = () => {
               >
                 Countries
               </Button>
-            </div>
+              </div>
           </div>
           <Button
             variant="ghost"
@@ -321,11 +449,11 @@ const AppContent = () => {
           )}
         </div>
 
-        <div className="flex-1">
+        <div className="flex-1 overflow-auto">
           {view === 'folders' && selectedFolder ? (
             <EmailList folder={selectedFolder} />
-          ) : view === 'countries' && selectedCountry ? (
-            <CountryFolder country={selectedCountry} folder={selectedFolder} />
+          ) : view === 'countries' ? (
+            <CountryFolder country={selectedCountry} />
           ) : (
             <div className="flex-1 flex items-center justify-center text-gray-500">
               {view === 'folders' 
