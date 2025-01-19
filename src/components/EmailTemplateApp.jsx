@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Moon, Sun, Loader, Search, Globe, ThumbsUp, ThumbsDown, Mail } from 'lucide-react';
+import { Moon, Sun, Loader, Search, Globe, ThumbsUp, ThumbsDown, Mail, Plus, X } from 'lucide-react';
 import { FolderList } from './FolderList';
 import { EmailList } from './EmailList';
 import { useFolders, FolderProvider } from '../context/FolderContext';
@@ -39,7 +39,8 @@ const Button = ({ children, variant = 'default', className = '', ...props }) => 
   const variants = {
     default: 'bg-blue-500 text-white hover:bg-blue-600',
     outline: 'border border-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800',
-    ghost: 'hover:bg-gray-100 dark:hover:bg-gray-800'
+    ghost: 'hover:bg-gray-100 dark:hover:bg-gray-800',
+    danger: 'bg-red-500 text-white hover:bg-red-600'
   };
 
   return (
@@ -49,6 +50,85 @@ const Button = ({ children, variant = 'default', className = '', ...props }) => 
     >
       {children}
     </button>
+  );
+};
+
+// Email Input Component
+const EmailInput = ({ emails, setEmails }) => {
+  const [email, setEmail] = useState('');
+  const [error, setError] = useState('');
+
+  const validateEmail = (email) => {
+    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return re.test(email.toLowerCase());
+  };
+
+  const handleAddEmail = () => {
+    if (!email) {
+      setError('Email is required');
+      return;
+    }
+    if (!validateEmail(email)) {
+      setError('Invalid email format');
+      return;
+    }
+    if (emails.includes(email)) {
+      setError('Email already exists in the list');
+      return;
+    }
+
+    setEmails([...emails, email]);
+    setEmail('');
+    setError('');
+  };
+
+  const handleKeyPress = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleAddEmail();
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-2">
+        <div className="flex-1">
+          <Input
+            type="email"
+            value={email}
+            onChange={(e) => {
+              setEmail(e.target.value);
+              setError('');
+            }}
+            onKeyPress={handleKeyPress}
+            placeholder="Add email address"
+            className={error ? 'border-red-500' : ''}
+          />
+          {error && (
+            <p className="text-sm text-red-500 mt-1">{error}</p>
+          )}
+        </div>
+        <Button onClick={handleAddEmail} className="flex items-center gap-2">
+          <Plus className="h-4 w-4" />
+          Add
+        </Button>
+      </div>
+      <div className="space-y-2">
+        {emails.map((email, index) => (
+          <div key={index} className="flex items-center gap-2 p-2 bg-gray-50 dark:bg-gray-800 rounded">
+            <Mail className="h-4 w-4 text-gray-500" />
+            <span className="flex-1">{email}</span>
+            <button
+              onClick={() => setEmails(emails.filter((_, i) => i !== index))}
+              className="text-red-500 hover:text-red-600"
+              aria-label="Remove email"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 };
 
@@ -119,68 +199,14 @@ const CountrySearch = ({ onSelectCountry }) => {
   );
 };
 
-// Version List Component
-const VersionList = ({ versions = [], onUseVersion, onLikeVersion }) => {
-  const sortedVersions = [...versions].sort((a, b) => {
-    if (a.usageCount !== b.usageCount) return b.usageCount - a.usageCount;
-    return b.likes - a.likes;
-  });
-
-  return (
-    <div className="space-y-4">
-      {sortedVersions.map((version) => (
-        <div key={version.id} className="border rounded-lg p-4 bg-white dark:bg-gray-800">
-          <div className="flex justify-between items-center mb-2">
-            <h4 className="font-medium">Version {version.version}</h4>
-            <div className="flex items-center gap-2">
-              <Button 
-                variant="ghost"
-                onClick={() => onLikeVersion(version.id, 'like')}
-                className="p-1"
-              >
-                <ThumbsUp className="h-4 w-4" />
-                <span className="ml-1">{version.likes}</span>
-              </Button>
-              <Button
-                variant="ghost"
-                onClick={() => onLikeVersion(version.id, 'dislike')}
-                className="p-1"
-              >
-                <ThumbsDown className="h-4 w-4" />
-                <span className="ml-1">{version.dislikes}</span>
-              </Button>
-            </div>
-          </div>
-          <div className="space-y-1">
-            {version.emails.map((email, idx) => (
-              <div key={idx} className="text-sm text-gray-600 dark:text-gray-300 flex items-center gap-2">
-                <Mail className="h-4 w-4" />
-                {email}
-              </div>
-            ))}
-          </div>
-          <div className="mt-4 flex justify-between items-center">
-            <span className="text-sm text-gray-500">
-              Used {version.usageCount} times
-            </span>
-            <Button onClick={() => onUseVersion(version)}>
-              Use List
-            </Button>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-};
-
 // Country Folder Component
 const CountryFolder = ({ country }) => {
   const [folders, setFolders] = useState([]);
   const [selectedFolderId, setSelectedFolderId] = useState(null);
-  const [versions, setVersions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
+  const [emails, setEmails] = useState([]);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -202,24 +228,6 @@ const CountryFolder = ({ country }) => {
     loadFolders();
   }, [country?.code]);
 
-  useEffect(() => {
-    const loadVersions = async () => {
-      if (!selectedFolderId || !country?.code) return;
-      
-      try {
-        const data = await githubStorage.loadCountryFolderVersions(
-          country.code,
-          selectedFolderId
-        );
-        setVersions(data);
-      } catch (error) {
-        console.error('Error loading versions:', error);
-      }
-    };
-
-    loadVersions();
-  }, [selectedFolderId, country?.code]);
-
   const handleCreateFolder = async (e) => {
     e.preventDefault();
     try {
@@ -228,50 +236,25 @@ const CountryFolder = ({ country }) => {
         setError('Folder name is required');
         return;
       }
+      if (emails.length === 0) {
+        setError('At least one email address is required');
+        return;
+      }
 
       const newFolder = await githubStorage.createCountryFolder(
         country.code,
-        newFolderName.trim()
+        newFolderName.trim(),
+        emails
       );
 
       setFolders(prev => [...prev, newFolder]);
       setNewFolderName('');
+      setEmails([]);
       setIsCreating(false);
       setSelectedFolderId(newFolder.id);
     } catch (error) {
       console.error('Error creating folder:', error);
       setError('Failed to create folder');
-    }
-  };
-
-  const handleUseVersion = async (version) => {
-    try {
-      await githubStorage.updateVersionStats(
-        country.code,
-        selectedFolderId,
-        version.id,
-        'use'
-      );
-      // Handle version usage (e.g., copy emails to clipboard or selected folder)
-      console.log('Using version:', version);
-    } catch (error) {
-      console.error('Error using version:', error);
-    }
-  };
-
-  const handleLikeVersion = async (versionId, action) => {
-    try {
-      const updatedVersion = await githubStorage.updateVersionStats(
-        country.code,
-        selectedFolderId,
-        versionId,
-        action
-      );
-      setVersions(prev =>
-        prev.map(v => v.id === versionId ? updatedVersion : v)
-      );
-    } catch (error) {
-      console.error('Error updating version:', error);
     }
   };
 
@@ -316,6 +299,12 @@ const CountryFolder = ({ country }) => {
               placeholder="Enter list name (e.g., Parliament Members)"
             />
           </div>
+          
+          <div>
+            <label className="block text-sm font-medium mb-1">Email Addresses</label>
+            <EmailInput emails={emails} setEmails={setEmails} />
+          </div>
+
           <div className="flex gap-2">
             <Button type="submit">Create</Button>
             <Button 
@@ -324,6 +313,7 @@ const CountryFolder = ({ country }) => {
               onClick={() => {
                 setIsCreating(false);
                 setNewFolderName('');
+                setEmails([]);
                 setError(null);
               }}
             >
@@ -351,18 +341,24 @@ const CountryFolder = ({ country }) => {
             >
               <div className="flex justify-between items-center">
                 <h3 className="font-medium">{folder.name}</h3>
-                <span className="text-sm text-gray-500">
-                  Created {new Date(folder.createdAt).toLocaleDateString()}
-                </span>
+                <div className="flex items-center gap-4">
+                  <span className="text-sm text-gray-500">
+                    {folder.emails?.length || 0} emails
+                  </span>
+                  <span className="text-sm text-gray-500">
+                    Created {new Date(folder.createdAt).toLocaleDateString()}
+                  </span>
+                </div>
               </div>
               
-              {selectedFolderId === folder.id && (
-                <div className="mt-4">
-                  <VersionList
-                    versions={versions}
-                    onUseVersion={handleUseVersion}
-                    onLikeVersion={handleLikeVersion}
-                  />
+              {selectedFolderId === folder.id && folder.emails?.length > 0 && (
+                <div className="mt-4 space-y-2">
+                  {folder.emails.map((email, index) => (
+                    <div key={index} className="flex items-center gap-2 p-2 bg-gray-50 dark:bg-gray-800 rounded">
+                      <Mail className="h-4 w-4 text-gray-500" />
+                      <span>{email}</span>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -419,7 +415,7 @@ const AppContent = () => {
               >
                 Countries
               </Button>
-              </div>
+            </div>
           </div>
           <Button
             variant="ghost"

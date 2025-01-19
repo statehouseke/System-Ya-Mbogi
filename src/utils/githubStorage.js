@@ -144,32 +144,36 @@ class SecurityManager {
     return CryptoJS.SHA256(JSON.stringify(data)).toString();
   }
 
-  // Check rate limits
-  async checkRateLimit(ip, action) {
-    if (this.blacklistedIPs.has(ip)) {
-      return false;
-    }
-
-    const key = `${ip}:${action}`;
+  // Modified rate limiting to use anonymous tokens instead of IPs
+  async checkRateLimit(action) {
     const now = Date.now();
-    const limit = RATE_LIMITS[action];
+    const limit = this.RATE_LIMITS[action];
 
-    if (!this.rateLimitCache.has(key)) {
-      this.rateLimitCache.set(key, []);
-    }
+    if (!limit) return true;
 
-    const requests = this.rateLimitCache.get(key);
+    // Use session-based anonymous tracking instead of IP
+    const sessionKey = `rateLimit:${action}:${this.getAnonymousToken()}`;
+    const requests = this.rateLimitCache.get(sessionKey) || [];
     const recentRequests = requests.filter(time => now - time < limit.window);
 
     if (recentRequests.length >= limit.max) {
-      await this.flagSuspiciousIP(ip, action);
+      await this.flagSuspiciousIP(action);
       return false;
     }
 
     recentRequests.push(now);
-    this.rateLimitCache.set(key, recentRequests);
+    this.rateLimitCache.set(sessionKey, recentRequests);
     return true;
   }
+
+  // Helper method to generate anonymous session tokens
+  getAnonymousToken() {
+      if (!this.anonymousToken) {
+        this.anonymousToken = uuidv4();
+      }
+      return this.anonymousToken;
+  }
+  
 
   // Generate shareable link with encryption
   generateShareableLink(folderId, metadata) {
@@ -1526,7 +1530,7 @@ class GitHubStorage {
     }
   }
 
-  async createCountryFolder(countryCode, folderName) {
+  async createCountryFolder(countryCode, folderName, emails = []) {
     try {
       const folderId = uuidv4();
       const folderPath = `data/countries/${countryCode.toLowerCase()}/${folderId}`;
@@ -1534,15 +1538,20 @@ class GitHubStorage {
       await this.ensureDirectoryExists(folderPath);
       await this.ensureDirectoryExists(`${folderPath}/versions`);
 
+      // Create the folder data structure
       const folderData = {
         id: folderId,
         name: folderName,
         countryCode,
+        emails,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
+        // Remove direct IP storage, use anonymized tracking if needed
+        emailCount: emails.length,
         checksum: ''
       };
 
+      // Generate checksum without including IP information
       folderData.checksum = this.security.generateChecksum(folderData);
 
       await this.saveData(
@@ -1556,7 +1565,8 @@ class GitHubStorage {
       throw error;
     }
   }
-
+  
+  // Modified method to load country folders with better privacy
   async loadCountryFolders(countryCode) {
     try {
       const path = `data/countries/${countryCode.toLowerCase()}`;
@@ -1571,7 +1581,13 @@ class GitHubStorage {
           .filter(file => file.type === 'dir')
           .map(async folder => {
             try {
-              return await this.loadData(`${path}/${folder.name}/folder.json`);
+              const data = await this.loadData(`${path}/${folder.name}/folder.json`);
+              // Remove any potentially sensitive data before returning
+              const {
+                checksum,
+                ...safeData
+              } = data;
+              return safeData;
             } catch (error) {
               console.warn(`Failed to load folder ${folder.name}:`, error);
               return null;
@@ -2001,20 +2017,17 @@ class GitHubStorage {
     }
   }
 
-  // Flag suspicious IP activity
-  async flagSuspiciousIP(ip, action) {
-    const ipHash = CryptoJS.SHA256(ip).toString();
+  // Modified security manager methods for better anonymity
+  async flagSuspiciousIP(action) {
+    // Instead of storing IPs, just increment anonymous counters
     const suspiciousActivity = {
-      ipHash,
       action,
       timestamp: new Date().toISOString(),
-      attempts: this.security.rateLimitCache.get(`${ip}:${action}`).length
+      attempts: 1
     };
 
-    await this.saveData(
-      `data/maliciousips/${ipHash}.json`,
-      suspiciousActivity
-    );
+    const path = `data/maliciousips/anonymous_${uuidv4()}.json`;
+    await this.saveData(path, suspiciousActivity);
   }
 }
 // Create the singleton instance first
