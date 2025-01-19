@@ -401,7 +401,7 @@ const AppContent = () => {
       <header className="sticky top-0 z-50 bg-white dark:bg-gray-800 shadow-md">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <h1 className="text-2xl font-bold">Email Template System</h1>
+            <h1 className="text-2xl font-bold">System Ya Mbogi</h1>
             <div className="flex gap-2">
               <Button
                 variant={view === 'folders' ? 'default' : 'outline'}
