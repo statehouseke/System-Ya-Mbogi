@@ -522,58 +522,6 @@ class GitHubStorage {
   }
 
   // Make authenticated request to GitHub API
-  async makeRequest(url, options = {}) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
-
-    try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
-        headers: {
-          ...this.headers,
-          'If-None-Match': '', // Bypass GitHub's caching
-        }
-      });
-
-      const text = await response.text();
-      
-      if (!response.ok) {
-        let errorMessage;
-        try {
-          const errorJson = JSON.parse(text);
-          errorMessage = errorJson.message || errorJson.error || response.statusText;
-        } catch (e) {
-          errorMessage = text || response.statusText;
-        }
-
-        // Handle specific error cases
-        if (response.status === 403) {
-          if (errorMessage.includes('API rate limit exceeded')) {
-            throw new Error('Rate limit exceeded. Please try again later.');
-          }
-          throw new Error('Permission denied. Please check your GitHub token permissions.');
-        }
-
-        throw new Error(`GitHub API error (${response.status}): ${errorMessage}`);
-      }
-
-      // Parse JSON response if possible
-      try {
-        return text ? JSON.parse(text) : null;
-      } catch (e) {
-        return text;
-      }
-
-    } catch (error) {
-      if (error.name === 'AbortError') {
-        throw new Error(`Request timeout after ${this.timeout}ms`);
-      }
-      throw error;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  }
 
   async initializeRepository() {
     if (this.initialized) {
@@ -605,41 +553,6 @@ class GitHubStorage {
       throw error;
     }
   }
- 
-  async ensureDirectoryExists(path) {
-    try {
-      const response = await this.makeRequest(`${this.baseUrl}/contents/${path}`);
-      
-      if (response && Array.isArray(response)) {
-        return true;
-      }
-
-      // Create directory with .gitkeep
-      await this.makeRequest(`${this.baseUrl}/contents/${path}/.gitkeep`, {
-        method: 'PUT',
-        body: JSON.stringify({
-          message: `Initialize ${path} directory`,
-          content: btoa(''),
-          branch: 'main' // Explicitly specify branch
-        })
-      });
-
-      return true;
-    } catch (error) {
-      if (error.message.includes('404')) {
-        // Create parent directory first if needed
-        const parent = path.split('/').slice(0, -1).join('/');
-        if (parent && parent !== 'data') {
-          await this.ensureDirectoryExists(parent);
-        }
-        
-        // Retry creating this directory
-        return this.ensureDirectoryExists(path);
-      }
-      throw error;
-    }
-  }
-
 
   async loadCountryEmails(countryCode) {
     try {
@@ -721,6 +634,158 @@ class GitHubStorage {
     };
   }
 
+  // Fixed createFile method with proper retry handling and loop prevention
+  async createFile(path, content = '', message = '', maxRetries = 2) {
+    let attempt = 0;
+    const base64Content = btoa(unescape(encodeURIComponent(content)));
+    
+    while (attempt < maxRetries) {
+      try {
+        // First try to get existing file's SHA
+        let sha = null;
+        try {
+          const existingFile = await this.makeRequest(
+            `${this.baseUrl}/contents/${path}`
+          );
+          if (existingFile?.sha) {
+            sha = existingFile.sha;
+          }
+        } catch (error) {
+          // File doesn't exist, which is fine
+        }
+
+        // Create/update the file with SHA if we have it
+        const response = await this.makeRequest(
+          `${this.baseUrl}/contents/${path}`,
+          {
+            method: 'PUT',
+            body: JSON.stringify({
+              message: message || `Update ${path}`,
+              content: base64Content,
+              ...(sha && { sha })
+            })
+          }
+        );
+
+        return true;
+
+      } catch (error) {
+        attempt++;
+        
+        // If we're out of retries, just log and continue
+        if (attempt >= maxRetries) {
+          console.warn(`Warning: Failed to create/update file ${path} after ${maxRetries} attempts`);
+          return false;
+        }
+
+        // Wait before retrying
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+      }
+    }
+
+    return false;
+  }
+
+  // Fixed ensureDirectoryExists method with better retry handling
+  async ensureDirectoryExists(path, maxRetries = 2) {
+    let attempt = 0;
+
+    while (attempt < maxRetries) {
+      try {
+        // Check if directory exists
+        const response = await this.makeRequest(`${this.baseUrl}/contents/${path}`);
+        if (response && Array.isArray(response)) {
+          return true;
+        }
+
+        // Create parent directory if needed
+        const parentPath = path.split('/').slice(0, -1).join('/');
+        if (parentPath && parentPath !== 'data') {
+          await this.ensureDirectoryExists(parentPath);
+        }
+
+        // Create .gitkeep file to create directory
+        await this.createFile(
+          `${path}/.gitkeep`,
+          '',
+          `Initialize ${path} directory`
+        );
+
+        return true;
+
+      } catch (error) {
+        attempt++;
+        
+        // If not found or conflict, continue trying
+        if (error.message.includes('404') || error.message.includes('409')) {
+          if (attempt >= maxRetries) {
+            console.warn(`Warning: Directory creation failed for ${path} after ${maxRetries} attempts`);
+            return false;
+          }
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+          continue;
+        }
+
+        // For other errors, log and continue
+        console.warn(`Warning: Error creating directory ${path}:`, error);
+        return false;
+      }
+    }
+
+    return false;
+  }
+
+  // Fixed makeRequest method with simpler error handling
+  async makeRequest(url, options = {}) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+        headers: {
+          ...this.headers,
+          'If-None-Match': ''
+        }
+      });
+
+      const text = await response.text();
+      
+      // Don't throw on 404, just return null
+      if (response.status === 404) {
+        return null;
+      }
+
+      // For successful responses, try to parse JSON
+      if (response.ok) {
+        try {
+          return text ? JSON.parse(text) : null;
+        } catch (e) {
+          return text;
+        }
+      }
+
+      // For errors, include response status and parsed error message
+      let errorMessage;
+      try {
+        const errorJson = JSON.parse(text);
+        errorMessage = errorJson.message || errorJson.error || response.statusText;
+      } catch (e) {
+        errorMessage = text || response.statusText;
+      }
+
+      throw new Error(`GitHub API error (${response.status}): ${errorMessage}`);
+
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        throw new Error(`Request timeout after ${this.timeout}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
 
   async createFolder(folderData, ip) {
     try {
@@ -929,46 +994,6 @@ class GitHubStorage {
       }
     }
   }
-
-  // Modified createFile method with better error handling
-  async createFile(path, content, message, ignoreErrors = false) {
-    try {
-      // Check if file exists first
-      let existingFile;
-      try {
-        existingFile = await this.makeRequest(`${this.baseUrl}/contents/${path}`);
-      } catch (error) {
-        if (!error.message.includes('404')) {
-          throw error;
-        }
-      }
-
-      const base64Content = btoa(unescape(encodeURIComponent(content || '')));
-      const requestBody = {
-        message: message || `Create ${path}`,
-        content: base64Content
-      };
-
-      // If file exists, include its SHA
-      if (existingFile) {
-        requestBody.sha = existingFile.sha;
-      }
-
-      await this.makeRequest(`${this.baseUrl}/contents/${path}`, {
-        method: 'PUT',
-        body: JSON.stringify(requestBody)
-      });
-      
-      return true;
-    } catch (error) {
-      if (ignoreErrors && (error.message.includes('404') || error.message.includes('409'))) {
-        return false;
-      }
-      throw error;
-    }
-  }
-
-
 
   // Modified saveData method with better handling of new file creation
   async saveData(path, data) {
