@@ -1,0 +1,14 @@
+{
+  "id": "c18d86e2-9202-4829-8260-5be01e61a5f4",
+  "name": "keny",
+  "targetEmail": "1@gmail.com",
+  "createdAt": "2025-01-19T03:42:58.876Z",
+  "updatedAt": "2025-01-19T03:42:58.876Z",
+  "status": "silent",
+  "creatorIP": "be8f7bbebafd5e13c276cdd26a47f28132ed506aea76346419ddb124267134ff",
+  "adminHash": "7bb572a5f2a79e04be476e1dd1c25866628739b76bf3176512e48d748d3193ea29116335e5d25ca7078c3d8f4ad117fa63595c297e983025fbb400d220125bdf",
+  "adminSalt": "c592a6d13ad62d7bbbf667f37d46264e",
+  "emails": [],
+  "emailsLoaded": true,
+  "checksum": "8bef722d44f36eae49b08b6d194fc3fbb59bc4d886df0ec8261e1d7cf5afbac7"
+}
